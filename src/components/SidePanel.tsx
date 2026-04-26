@@ -252,77 +252,129 @@ export default function SidePanel({ order, onClose, onReconcile }: Props) {
   async function runMatching() {
     const parsed = parsedSwift || localOrder.parsed_swift || null;
 
-    const amountMatch = parsed?.amount
-      ? Number(parsed.amount) === Number(localOrder.amount)
-      : Boolean(localOrder.amount);
+    if (!parsed) {
+      alert("No SWIFT parsed");
+      return;
+    }
 
-    const currencyMatch = parsed?.currency
-      ? normalizeText(parsed.currency) === normalizeText(localOrder.currency || "")
-      : Boolean(localOrder.currency);
+    const amountMatch =
+      parsed.amount && localOrder.amount
+        ? Number(parsed.amount) === Number(localOrder.amount)
+        : false;
 
-    const accountMatch = parsed?.beneficiary_account
-      ? normalizeText(parsed.beneficiary_account) ===
-        normalizeText(localOrder.account_number || "")
-      : Boolean(localOrder.account_number);
+    const currencyMatch =
+      parsed.currency && localOrder.currency
+        ? normalizeText(parsed.currency) ===
+          normalizeText(localOrder.currency)
+        : false;
 
-    const swiftMatch = parsed?.beneficiary_bank_swift
-      ? normalizeText(parsed.beneficiary_bank_swift) ===
-        normalizeText(localOrder.swift_code || "")
-      : Boolean(localOrder.swift_code);
+    const accountMatch =
+      parsed.beneficiary_account && localOrder.account_number
+        ? normalizeText(parsed.beneficiary_account) ===
+          normalizeText(localOrder.account_number)
+        : false;
 
-    const beneficiaryMatch = parsed?.beneficiary_name
-      ? normalizeText(parsed.beneficiary_name).includes(
-          normalizeText(localOrder.beneficiary_name || "")
-        ) ||
-        normalizeText(localOrder.beneficiary_name || "").includes(
-          normalizeText(parsed.beneficiary_name)
-        )
-      : Boolean(localOrder.beneficiary_name);
+    const swiftMatch =
+      parsed.beneficiary_bank_swift && localOrder.swift_code
+        ? normalizeText(parsed.beneficiary_bank_swift) ===
+          normalizeText(localOrder.swift_code)
+        : false;
 
-    const checks = {
-      amount: amountMatch,
-      currency: currencyMatch,
-      beneficiary: beneficiaryMatch,
-      account: accountMatch,
-      swift_code: swiftMatch,
-      contract_uploaded: Boolean(localOrder.contract_uploaded),
-      bank_instruction_optional: true,
-      swift_uploaded: Boolean(localOrder.swift_uploaded || parsed),
-    };
+    const beneficiaryMatch =
+      parsed.beneficiary_name && localOrder.beneficiary_name
+        ? normalizeText(parsed.beneficiary_name).includes(
+            normalizeText(localOrder.beneficiary_name)
+          ) ||
+          normalizeText(localOrder.beneficiary_name).includes(
+            normalizeText(parsed.beneficiary_name)
+          )
+        : false;
 
-    const weightedChecks = [
-      checks.amount,
-      checks.currency,
-      checks.beneficiary,
-      checks.account,
-      checks.swift_code,
-      checks.contract_uploaded,
-      checks.swift_uploaded,
-    ];
-
-    const passed = weightedChecks.filter(Boolean).length;
-    const percent = Math.round((passed / weightedChecks.length) * 100);
-
+    // 🚨 RULE ENGINE (خیلی مهم)
     let status = "matched";
     let risk_level = "low";
 
-    if (percent < 70) {
+    let errors: string[] = [];
+
+    if (!accountMatch) {
+      errors.push("ACCOUNT MISMATCH");
+    }
+
+    if (!swiftMatch) {
+      errors.push("SWIFT MISMATCH");
+    }
+
+    if (!currencyMatch) {
+      errors.push("CURRENCY MISMATCH");
+    }
+
+    if (!amountMatch) {
+      errors.push("AMOUNT MISMATCH");
+    }
+
+    if (!beneficiaryMatch) {
+      errors.push("BENEFICIARY MISMATCH");
+    }
+
+    // 🚨 تصمیم نهایی
+    if (!accountMatch || !swiftMatch) {
       status = "error";
       risk_level = "critical";
-    } else if (percent < 90) {
+    } else if (errors.length > 0) {
       status = "warning";
       risk_level = "high";
     }
 
+    // 🎯 score واقعی
+    const total = 5;
+    const passed =
+      [amountMatch, currencyMatch, accountMatch, swiftMatch, beneficiaryMatch]
+        .filter(Boolean).length;
+
+    const percent = Math.round((passed / total) * 100);
+
     const result = {
       percent,
-      checks,
+      errors,
+      checks: {
+        amount: amountMatch,
+        currency: currencyMatch,
+        beneficiary: beneficiaryMatch,
+        account: accountMatch,
+        swift_code: swiftMatch,
+      },
       parsed_swift: parsed,
       checked_at: new Date().toISOString(),
-      note:
-        "Bank Instruction is optional. If uploaded, it is included in the pipeline, but missing bank instruction is not treated as an error.",
     };
 
+    setValidation(result);
+
+    const updates = {
+      validation_result: result,
+      match_score: percent,
+      status,
+      risk_level,
+      automation_log: mergeAutomationLog("matching_run"),
+    };
+
+    const { error } = await supabase
+      .from("orders")
+      .update(updates)
+      .eq("id", localOrder.id);
+
+    if (error) {
+      console.error(error);
+      alert("Matching save failed");
+      return;
+    }
+
+    setLocalOrder((prev) => ({
+      ...prev,
+      ...updates,
+    }));
+
+    window.dispatchEvent(new Event("orders-refresh"));
+}
     setValidation(result);
 
     const updates = {
