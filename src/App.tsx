@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   LayoutDashboard, 
   Table2, 
@@ -16,6 +16,7 @@ import {
   ScanText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { supabase } from './lib/supabaseClient';
 
 // Components
 import DashboardView from './components/DashboardView';
@@ -34,16 +35,90 @@ type ViewType =
   | 'reconciliation'
   | 'alerts';
 
+type HeaderStats = {
+  total: number;
+  matched: number;
+  warnings: number;
+  errors: number;
+  usd: number;
+  cny: number;
+};
+
 export default function App() {
   const [activeView, setActiveView] = useState<ViewType>('orders');
   const [selectedOrder, setSelectedOrder] = useState<any | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isPanelOpen, setIsPanelOpen] = useState(false);
 
+  const [stats, setStats] = useState<HeaderStats>({
+    total: 0,
+    matched: 0,
+    warnings: 0,
+    errors: 0,
+    usd: 0,
+    cny: 0,
+  });
+
+  const fetchStats = useCallback(async () => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .gte('created_at', today.toISOString());
+
+    if (error) {
+      console.error('Header stats load error:', error);
+      return;
+    }
+
+    const rows = data || [];
+
+    let matched = 0;
+    let warnings = 0;
+    let errors = 0;
+    let usd = 0;
+    let cny = 0;
+
+    rows.forEach((order: any) => {
+      if (order.status === 'matched') matched += 1;
+      if (order.status === 'warning') warnings += 1;
+      if (order.status === 'error') errors += 1;
+
+      if (order.currency === 'USD') usd += Number(order.amount || 0);
+      if (order.currency === 'CNY') cny += Number(order.amount || 0);
+    });
+
+    setStats({
+      total: rows.length,
+      matched,
+      warnings,
+      errors,
+      usd,
+      cny,
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchStats();
+
+    const refreshStatsHandler = () => {
+      fetchStats();
+    };
+
+    window.addEventListener('orders-refresh', refreshStatsHandler);
+
+    return () => {
+      window.removeEventListener('orders-refresh', refreshStatsHandler);
+    };
+  }, [fetchStats]);
+
   useEffect(() => {
     const goToOrdersHandler = () => {
       setActiveView('orders');
       setIsPanelOpen(false);
+      fetchStats();
     };
 
     window.addEventListener('go-to-orders', goToOrdersHandler);
@@ -51,12 +126,15 @@ export default function App() {
     return () => {
       window.removeEventListener('go-to-orders', goToOrdersHandler);
     };
-  }, []);
+  }, [fetchStats]);
 
   const handleRowClick = (order: any) => {
     setSelectedOrder(order);
     setIsPanelOpen(true);
   };
+
+  const reconciliationRate =
+    stats.total > 0 ? ((stats.matched / stats.total) * 100).toFixed(1) : '0.0';
 
   const menuItems = [
     { id: 'dashboard', label: 'Monitor', icon: LayoutDashboard },
@@ -98,7 +176,9 @@ export default function App() {
             <span className="text-[10px] text-text-dim font-bold uppercase">
               RECONCILIATION RATE:
             </span>
-            <span className="text-xs font-mono text-green-400">94.2%</span>
+            <span className="text-xs font-mono text-green-400">
+              {reconciliationRate}%
+            </span>
           </div>
 
           <div className="h-6 w-[1px] bg-border-subtle"></div>
@@ -116,7 +196,7 @@ export default function App() {
             Today Orders
           </div>
           <div className="text-lg font-mono text-white leading-none mt-1 uppercase tracking-tighter">
-            214
+            {stats.total}
           </div>
         </div>
 
@@ -125,7 +205,7 @@ export default function App() {
             Matched
           </div>
           <div className="text-lg font-mono text-green-400 leading-none mt-1 tracking-tighter">
-            188
+            {stats.matched}
           </div>
         </div>
 
@@ -134,7 +214,7 @@ export default function App() {
             Warnings
           </div>
           <div className="text-lg font-mono text-yellow-400 leading-none mt-1 tracking-tighter">
-            18
+            {stats.warnings}
           </div>
         </div>
 
@@ -143,7 +223,7 @@ export default function App() {
             Critical Errors
           </div>
           <div className="text-lg font-mono text-red-500 leading-none mt-1 tracking-tighter animate-pulse">
-            08
+            {stats.errors.toString().padStart(2, '0')}
           </div>
         </div>
 
@@ -152,7 +232,10 @@ export default function App() {
             Total Volume (USD)
           </div>
           <div className="text-lg font-mono text-white leading-none mt-1 tracking-tighter">
-            $ 4,822,109.45
+            $ {stats.usd.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </div>
         </div>
 
@@ -161,7 +244,10 @@ export default function App() {
             Total Volume (CNY)
           </div>
           <div className="text-lg font-mono text-white leading-none mt-1 tracking-tighter">
-            ¥ 18,290,442.00
+            ¥ {stats.cny.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
           </div>
         </div>
       </div>
@@ -257,6 +343,7 @@ export default function App() {
                     onSuccess={() => {
                       setActiveView('orders');
                       setIsPanelOpen(false);
+                      fetchStats();
                       window.dispatchEvent(new Event('orders-refresh'));
                     }}
                   />
